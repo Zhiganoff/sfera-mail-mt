@@ -1,7 +1,5 @@
 #include "allocator.h"
 
-using namespace std;
-
 std::vector<void*> Pointer::pointers;
 
 Pointer Allocator::alloc(size_t N) {
