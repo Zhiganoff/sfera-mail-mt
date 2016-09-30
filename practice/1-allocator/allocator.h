@@ -1,7 +1,9 @@
 #include <stdexcept>
 #include <string>
 #include <list>
+#include <vector>
 #include <cstring>
+#include <iostream>
 
 enum class AllocErrorType {
     InvalidFree,
@@ -23,27 +25,43 @@ public:
 
 class Allocator;
 
-struct memBlock;
-
 class Pointer {
-    void *p_;
 public:
-    Pointer(void *p = nullptr): p_(p) {}
-    void *get() const { return p_; }
-    void *set(void *p) { p_ = p; }
+    int idx;
+    size_t size_;
+
+    static std::vector<void*> pointers;
+
+    friend Allocator;
+
+    Pointer(void *p = nullptr, size_t new_size = 0): size_(new_size) {
+        pointers.push_back(p);
+        idx = pointers.size() - 1;
+    }
+
+    void *get() const { return pointers[idx]; }
+    void *set(void *p) { pointers[idx] = p; }
+    int check() {
+        return pointers.size();
+    }
 };
 
 struct memBlock {
     void *pointer_;
     size_t size_;
     size_t used_;
-    memBlock(void *pointer, size_t size, size_t used): pointer_(pointer), size_(size), used_(used) {}
+    int idx_;
+    memBlock(void *pointer, size_t size, size_t used, int idx): pointer_(pointer),
+                                                                size_(size),
+                                                                used_(used),
+                                                                idx_(idx) {}
 };
 
 class Allocator {
     void *base_;
     size_t size_;
     std::list<memBlock> blocks;
+
 public:
     Allocator(void *base, size_t size): base_(base), size_(size) {
         //freeBlocks.push_back(memBlock(base, size));
@@ -53,12 +71,17 @@ public:
     void realloc(Pointer &p, size_t N);
     void free(Pointer &p);
     void defrag();
-    std::string dump() { /*return ""; }*/
-        //std::cout << "Used: " << (*blocks.begin()).used_ << std::endl;
+    void dump() { /*return ""; }*/
+        std::list< memBlock >::iterator it = blocks.begin();
+        std::cout << std::endl;
+            while (it != blocks.cend()) {
+                std::cout << "pointer: " << (*it).pointer_ << " idx: " << it->idx_ << " size: " << (*it).size_ << " used: " << (*it).used_ << std::endl;
+                it++;
+            }
     }
 
     void moveMem(void * destptr, void * srcptr, size_t num);
-    void *getBase() { return base_; }
-    size_t getSize() { return size_; }
+    /*void *getBase() { return base_; }
+    size_t getSize() { return size_; }*/
 };
 
