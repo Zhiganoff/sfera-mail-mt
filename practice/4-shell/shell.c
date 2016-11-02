@@ -250,7 +250,7 @@ int execute(cmd_inf *cmd)
             exit(1);
         }
     }
-    if (cmd->backgrnd) { wait(NULL); return 0;}
+    //if (cmd->backgrnd) { wait(NULL); return 0;}
     int ex_status;
     wait(&ex_status);
     if (cmd->ifExecuted)

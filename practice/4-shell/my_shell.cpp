@@ -3,6 +3,11 @@
 #include <cstring>
 #include <vector>
 #include <set>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <signal.h>
 
 using std::cout;
 using std::endl;
@@ -13,25 +18,13 @@ static const string str_delims(" ><&|");
 static std::set<char> delims;
 static std::set<string> operators;
 
-/*typedef struct cmd_inf {
-    char ** argv; // список из имени команды и аргументов
-    char *infile; // переназначенный файл стандартного ввода
-    char *outfile; // переназначенный файл стандартного вывода
-    char *outfile2; // дозапись
-    int first; // для корректного выхода из рекурсии
-    int backgrnd; // =1, если команда подлежит выполнению в фоновом режиме
-    struct cmd_inf* psubcmd; // команды для запуска в дочернем shell
-    struct cmd_inf* pipe; // следующая команда после “|”
-    struct cmd_inf* ifExecuted; // после &&
-    struct cmd_inf* ifNotExecuted; // после ||
-    struct cmd_inf* next; // следующая после “;” (или после “&”)
-} cmd_inf;*/
-
 class Command {
 public:
     Command(const vector<string>& tokens);
     ~Command();
     void dump();
+    int execute();
+    static void conveyor(Command* cmd);
 
     char** argv; // список из имени команды и аргументов
     uint argc; // количество аргументов
@@ -55,10 +48,10 @@ Command::Command(const vector<string>& tokens) {
     auto it = tokens.begin();
     while (it != tokens.cend() && operators.find(*it) == operators.cend()) {
         argv = (char**)realloc(argv, (argc + 1) * sizeof(char *));
-        argv[argc] = strdup(it->c_str());
+        argv[argc++] = strdup(it->c_str());
         it++;
-        argc++;
     }
+    argv = (char**)realloc(argv, (argc + 1) * sizeof(char *));
     argv[argc] = nullptr;
     while (it != tokens.cend()) {
         if (!it->compare("<")) {
@@ -85,13 +78,15 @@ Command::Command(const vector<string>& tokens) {
 
 Command::~Command() {
     for (uint idx = 0; idx < argc; idx++) {
-        free(argv[idx]);
+         free(argv[idx]);
     }
     free(argv);
+    delete pipe; // следующая команда после “|”
+    delete ifExecuted; // после &&
+    delete ifNotExecuted;
 }
 
 void Command::dump() {
-    cout << "debug" << endl;
     cout.flush();
     cout << "argv: ";
     for (uint idx = 0; idx < argc; idx++) {
@@ -117,7 +112,6 @@ void Command::dump() {
         cout << "ifNotExecuted:" << endl;
         ifNotExecuted->dump();
     }
-    // cout <<
 }
 
 void fill_sets() {
@@ -134,46 +128,142 @@ void fill_sets() {
 
 void tokenize(vector<string>& tokens, const string& input) {
     tokens.clear();
-    size_t idx = input.find_first_not_of(' ');
-    size_t len;
-    string token;
+    size_t idx = 0, len = 0;
+    while (input[idx] == ' ') {
+        idx++;
+    }
     while (idx != input.size()) {
+        if (delims.find(input[idx]) == delims.cend()) {
+            len = 1;
+            while (idx + len != input.size() && delims.find(input[idx + len]) == delims.cend()){
+                len++;
+            }
+        } else {
+            len = 1;
+            if (delims.find(input[idx + 1]) != delims.cend() && input[idx + 1] != ' ') {
+                len++;
+            }
+        }
+        // cout << "deb: " << idx << ' ' << len << endl;
+        // cout << "res: " << input.substr(idx, len) << endl;
+        tokens.push_back(input.substr(idx, len));
+        idx += len;
         while (input[idx] == ' ') {
             idx++;
         }
-        len = 1;
-        while (idx + len != input.size() && delims.find(input[idx + len]) == delims.cend()){
-            len++;
+    }
+}
+
+int Command::execute() {
+    if (pipe) {
+        Command::conveyor(this);
+        return 0;
+    }
+    pid_t pid, pid_back = 0;
+    pid = fork();
+    if (pid == 0) {
+        /* Перенаправление ввода/вывода */
+        int fdIn, fdOut;
+        if (infile.size()){
+            if ((fdIn = open(infile.c_str(), O_RDONLY, 0666)) == -1) {
+                cout << "Can't open " << infile << endl;
+                return 0;
+                }
+            dup2(fdIn, STDIN_FILENO);
+            close(fdIn);
         }
-        tokens.push_back(input.substr(idx, len));
-        idx += len;
-        if (idx != input.size() && input[idx] != ' ') {
-            len = 1;
-            while (delims.find(input[idx + len]) != delims.cend() &&
-                   input[idx + len] != ' ') {
-                len++;
-            }
-            tokens.push_back(input.substr(idx, len));
-            idx += len;
+        if (outfile.size()) {
+            fdOut = open(outfile.c_str(),  O_CREAT | O_TRUNC | O_WRONLY, 0666);
+            dup2(fdOut, STDOUT_FILENO);
+            close(fdOut);
+        }
+        /* Исполнение */
+        if (backgrnd) {
+            pid_back = fork();
+            if (pid_back == 0) {
+                int fd;
+                signal (SIGINT, SIG_IGN);
+                fd = open("/dev/null", O_RDWR);
+                dup2(fd, 0);
+                dup2(fd, 1);
+                close(fd);
+                execvp(argv[0], argv);
+                }
+            std::cerr << "Spawned child process " << pid_back << endl;
+            exit(0);
+            return 0;
+        }
+        if (argv) {
+            execvp(argv[0], argv);
+            perror(argv[0]);
+            exit(1);
         }
     }
+    int ex_status;
+    // if (backgrnd) { 
+    //     wait(&ex_status);
+    //     std::cerr << "Process " << pid_back << " exited: " << WIFEXITED(ex_status) << endl;
+    //     return ex_status;
+    // }
+    wait(&ex_status);
+    if (ifExecuted)
+    {
+        if (WIFEXITED(ex_status)) {
+            if (!WEXITSTATUS(ex_status)) {
+                ex_status = ifExecuted->execute();
+                // std::cerr << WEXITSTATUS(ex_status) << endl;
+            }
+        }
+    } else if (ifNotExecuted) {
+        if (!WIFEXITED(ex_status)) {
+            ifNotExecuted->execute();
+        } else if (WIFEXITED(ex_status) && WEXITSTATUS(ex_status)) {
+            ifNotExecuted->execute();
+        }
+    }
+    return ex_status;
+}
+
+void Command::conveyor(Command* cmd) {
+    int saveIn = dup(0);
+    int fd[2];
+    while (cmd->pipe) {
+        ::pipe(fd);
+        if (!fork()) {
+            dup2(fd[1], STDOUT_FILENO);
+            close(fd[1]);
+            close(fd[0]);
+            execvp(cmd->argv[0], cmd->argv);
+            perror(cmd->argv[0]);
+            exit(1);
+        }
+        dup2(fd[0], STDIN_FILENO);
+        close(fd[0]);
+        close(fd[1]);
+        cmd = cmd->pipe;
+    }
+    if (!fork()) {
+        execvp(cmd->argv[0], cmd->argv);
+    }
+    close(fd[0]);
+    while (wait(NULL) != -1);
+    dup2(saveIn, 0);
+    close(saveIn);
 }
 
 int main() {
     fill_sets();
     string input;
     vector<string> tokens;
-    while (true) {
-        //std::cin >> input;
-        std::getline(std::cin, input);
+    while (std::getline(std::cin, input)) {
         tokenize(tokens, input);
         // for (const string& token : tokens) {
-        //     cout << token << ' ' << token.size() << endl;
+        //    cout << token << ' ' << token.size() << endl;
         // }
         Command cur_cmd(tokens);
-        cout << "debug" << endl;
-        cout.flush();
-        cur_cmd.dump();
+        // cur_cmd.dump();
+        cur_cmd.execute();
+        // std::cerr << WEXITSTATUS(ex_status) << endl;
     }
 
     return 0;
