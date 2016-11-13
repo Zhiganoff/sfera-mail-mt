@@ -107,12 +107,30 @@ void Expression::dump() {
 }
 
 int Expression::execute() {
-    std::cout << "debug: Entered execute()" << std::endl;
-    if (args.size()) {
-        std::cout << token << ' ' << args.size() << std::endl;
-    }
+    // std::cout << "debug: Entered execute()" << std::endl;
+    // if (args.size()) {
+    //     std::cout << token << ' ' << args.size() << std::endl;
+    // }
     switch (args.size()) {
         case 2: {
+            if (!token.compare("|")) {
+                // static int saveIn = dup(0);
+                static int fd[2];
+                pipe(fd);
+                if (!fork()) {
+                    dup2(fd[1], STDOUT_FILENO);
+                    close(fd[0]);
+                    execvp(args[0].argv[0], args[0].argv);
+                }
+                dup2(fd[0], STDIN_FILENO);
+                close(fd[1]);
+                execvp(args[1].argv[0], args[1].argv);
+                // close(fd[0]);
+                // while (wait(NULL) != -1);
+                wait(NULL);
+                // dup2(saveIn, 0);
+                // close(saveIn);
+            }
             int ex_status = args[0].execute();
             // std::cout << token << std::endl;
             if (!token.compare("&&"))
@@ -231,7 +249,7 @@ Expression Parser::parse_binary_expression() {
         // std::cout << "dubug op: " << op << std::endl;
         // std::cout << "debug tokens.size(): " << tokens.size() << std::endl;
 
-        Expression right_expr = parse_binary_expression();
+        Expression right_expr = parse_simple_expression();
         left_expr = Expression(op, left_expr, right_expr);
     }
     // std::cout << "debug7" << std::endl;
@@ -253,7 +271,7 @@ int main()
         // std::cout << "debug2" << std::endl;
         Expression e = p.parse();
         // std::cout << "debug3" << std::endl;
-        e.dump();
+        // e.dump();
         // std::cout << "debug: handled" << std::endl;
         e.execute();
     }
