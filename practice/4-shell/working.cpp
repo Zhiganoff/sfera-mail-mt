@@ -38,6 +38,7 @@ struct Expression {
 
     void dump();
     int execute();
+    void get_conv_v(std::vector<Expression>& v);
     // static void conveyor(Command* cmd);
 
     char** argv;         // список из имени команды и аргументов
@@ -114,41 +115,53 @@ int Expression::execute() {
     switch (args.size()) {
         case 2: {
             if (!token.compare("|")) {
-                // static int saveIn = dup(0);
-                static int fd[2];
-                pipe(fd);
-                if (!fork()) {
-                    dup2(fd[1], STDOUT_FILENO);
-                    close(fd[0]);
-                    execvp(args[0].argv[0], args[0].argv);
+                std::vector<Expression> conv;
+                get_conv_v(conv);
+                // for (auto& expr : conv) {
+                //     expr.dump();
+                // }
+                int saveIn = dup(0);
+                int fd[2];
+                size_t idx = 0;
+                for (; idx < conv.size() - 1; idx++) {
+                    pipe2(fd, O_CLOEXEC);
+                    if (!fork()) {
+                        dup2(fd[1], STDOUT_FILENO);
+                        close(fd[0]);
+                        execvp(conv[idx].argv[0], conv[idx].argv);
+                    }
+                    dup2(fd[0], STDIN_FILENO);
+                    close(fd[1]);
                 }
-                dup2(fd[0], STDIN_FILENO);
-                close(fd[1]);
-                execvp(args[1].argv[0], args[1].argv);
-                // close(fd[0]);
-                // while (wait(NULL) != -1);
-                wait(NULL);
-                // dup2(saveIn, 0);
-                // close(saveIn);
-            }
-            int ex_status = args[0].execute();
-            // std::cout << token << std::endl;
-            if (!token.compare("&&"))
-            {
-                // std::cout << ex_status << std::endl;
-                if (WIFEXITED(ex_status)) {
-                    if (!WEXITSTATUS(ex_status)) {
+                if (!fork()) {
+                    execvp(conv[idx].argv[0], conv[idx].argv);
+                }
+                close(fd[0]);
+                int ex_status;
+                while (wait(&ex_status) != -1);
+                dup2(saveIn, 0);
+                close(saveIn);
+                return ex_status;
+            } else {
+                int ex_status = args[0].execute();
+                // std::cout << token << std::endl;
+                if (!token.compare("&&"))
+                {
+                    // std::cout << ex_status << std::endl;
+                    if (WIFEXITED(ex_status)) {
+                        if (!WEXITSTATUS(ex_status)) {
+                            return args[1].execute();
+                        }
+                    }
+                } else {
+                    // std::cout << ex_status << std::endl;
+                    if (!WIFEXITED(ex_status) || (WIFEXITED(ex_status) && WEXITSTATUS(ex_status))) {
                         return args[1].execute();
                     }
                 }
-            } else {
                 // std::cout << ex_status << std::endl;
-                if (!WIFEXITED(ex_status) || (WIFEXITED(ex_status) && WEXITSTATUS(ex_status))) {
-                    return args[1].execute();
-                }
+                return ex_status;
             }
-            // std::cout << ex_status << std::endl;
-            return ex_status;
         }
         case 0: {
             pid_t pid;
@@ -183,6 +196,18 @@ int Expression::execute() {
         default:
             return 1;
     }
+}
+
+void Expression::get_conv_v(std::vector<Expression>& vec) {
+    switch (args.size()) {
+        case 2: {
+            args[0].get_conv_v(vec);
+            args[1].get_conv_v(vec);
+            return;
+        }
+        case 0:
+            vec.push_back(*this);
+        }
 }
 
 class Parser {
