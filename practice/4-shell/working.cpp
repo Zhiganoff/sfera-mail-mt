@@ -3,6 +3,7 @@
 #include <vector>
 #include <set>
 #include <cstring>
+#include <cerrno>
 #include <stdexcept>
 #include <unistd.h>
 #include <sys/types.h>
@@ -45,7 +46,6 @@ struct Expression {
     uint argc;           // количество аргументов
     std::string infile;  // переназначенный файл стандартного ввода
     std::string outfile; // переназначенный файл стандартного вывода
-    bool backgrnd;       // True, если команда подлежит выполнению в фоновом режиме
 
     std::string token;
     std::vector<Expression> args;
@@ -54,7 +54,6 @@ struct Expression {
 Expression::Expression(const std::vector<std::string>& input) {
     argv = nullptr;
     argc = 0;
-    backgrnd = false;
     auto it = input.begin();
     while (it != input.cend() && operators.find(*it) == operators.cend()) {
         argv = (char**)realloc(argv, (argc + 1) * sizeof(char *));
@@ -70,18 +69,15 @@ Expression::Expression(const std::vector<std::string>& input) {
         } else if (!it->compare(">")) {
             outfile = *(++it);
             it++;
-        } else if (!it->compare("&")) {
-            backgrnd = true;
-            it++;
         }
     }
 }
 
 void Expression::dump() {
-    std::cout << "debug: Entered dump()" << std::endl;
-    if (args.size()) {
-        std::cout << token << ' ' << args.size() << std::endl;
-    }
+    // std::cout << "debug: Entered dump()" << std::endl;
+    // if (args.size()) {
+    //     std::cout << token << ' ' << args.size() << std::endl;
+    // }
     switch (args.size()) {
         case 2: {
             args[0].dump();
@@ -102,7 +98,6 @@ void Expression::dump() {
             if (outfile.size()) {
                 std::cout << "outfile: " << outfile << std::endl;
             }
-            std::cout << "background: " << backgrnd << std::endl;
         }
     // std::cout << "debug wtf" << std::endl;
 }
@@ -112,6 +107,7 @@ int Expression::execute() {
     // if (args.size()) {
     //     std::cout << token << ' ' << args.size() << std::endl;
     // }
+    static int fd[2];
     switch (args.size()) {
         case 2: {
             if (!token.compare("|")) {
@@ -120,27 +116,44 @@ int Expression::execute() {
                 // for (auto& expr : conv) {
                 //     expr.dump();
                 // }
+
                 int saveIn = dup(0);
-                int fd[2];
                 size_t idx = 0;
                 for (; idx < conv.size() - 1; idx++) {
                     pipe2(fd, O_CLOEXEC);
                     if (!fork()) {
+                        signal(SIGINT, SIG_DFL);
                         dup2(fd[1], STDOUT_FILENO);
                         close(fd[0]);
-                        execvp(conv[idx].argv[0], conv[idx].argv);
+                        if (conv[idx].args.size()) {
+                            exit(conv[idx].execute());
+                        } else {
+                            execvp(conv[idx].argv[0], conv[idx].argv);
+                        }
                     }
                     dup2(fd[0], STDIN_FILENO);
                     close(fd[1]);
                 }
                 if (!fork()) {
-                    execvp(conv[idx].argv[0], conv[idx].argv);
+                    signal(SIGINT, SIG_DFL);
+                    if (conv[idx].args.size()) {
+                        exit(conv[idx].execute());
+                    } else {
+                        execvp(conv[idx].argv[0], conv[idx].argv);
+                    }
                 }
                 close(fd[0]);
+                close(fd[1]);
                 int ex_status;
                 while (wait(&ex_status) != -1);
                 dup2(saveIn, 0);
                 close(saveIn);
+                // pipe(fd);
+                // if (!fork()) {
+                //     dup2(fd[1], 1);
+                //     close(fd[0]);
+
+                // }
                 return ex_status;
             } else {
                 int ex_status = args[0].execute();
@@ -167,6 +180,7 @@ int Expression::execute() {
             pid_t pid;
             pid = fork();
             if (pid == 0) {
+                signal(SIGINT, SIG_DFL);
                 /* Перенаправление ввода/вывода */
                 int fdIn, fdOut;
                 if (infile.size()) {
@@ -201,8 +215,12 @@ int Expression::execute() {
 void Expression::get_conv_v(std::vector<Expression>& vec) {
     switch (args.size()) {
         case 2: {
-            args[0].get_conv_v(vec);
-            args[1].get_conv_v(vec);
+            if (token.compare("|")) {
+                vec.push_back(*this);
+            } else {
+                args[0].get_conv_v(vec);
+                args[1].get_conv_v(vec);       
+            }
             return;
         }
         case 0:
@@ -214,6 +232,12 @@ class Parser {
 public:
     explicit Parser(std::string& input);
     Expression parse();
+
+    static void handle_signals();
+
+    bool background;       // True, если команда подлежит выполнению в фоновом режиме
+    static int count;
+    static std::vector<pid_t> pids;
 private:
     std::string parse_token();
     Expression parse_simple_expression();
@@ -246,6 +270,12 @@ Parser::Parser(std::string& input) {
             idx++;
         }
     }
+    if (tokens.size() && !tokens.back().compare("&")) {
+        background = true;
+        tokens.pop_back();
+    } else {
+        background = false;
+    }
 }
 
 Expression Parser::parse_simple_expression() {
@@ -277,7 +307,7 @@ Expression Parser::parse_binary_expression() {
         Expression right_expr = parse_simple_expression();
         left_expr = Expression(op, left_expr, right_expr);
     }
-    // std::cout << "debug7" << std::endl;
+    // std::cout < <s"debug7" << std::endl;
     return left_expr;
 }
 
@@ -285,12 +315,60 @@ Expression Parser::parse() {
     return parse_binary_expression();
 }
 
+void Parser::handle_signals() {
+    // while (count) {
+    //     int ex_status;
+    //     pid_t cp = wait(&ex_status);
+    //     std::cerr << "Process " << cp << " exited: " << WEXITSTATUS(ex_status) << std::endl;
+    // }
+    pid_t p;
+    int status;
+
+    if ((p=waitpid(-1, &status, WNOHANG)) != -1)
+    {
+        if (p) {
+            std::cerr << "Process " << p << " exited: " << WEXITSTATUS(status) << std::endl;
+        }
+    }
+}
+
+// void child_handler(int signum, siginfo_t * siginfo, void *code)  {
+//     Parser::count++;
+//     std::cout << "debug: Handled" << std::endl;
+// }
+
+void child_handler(int signum) {
+    Parser::count++;    
+}
+
+void my_sigchld_handler(int sig)
+{
+    // pid_t p;
+    // int status;
+
+    // while ((p=waitpid(-1, &status, WNOHANG)) != -1)
+    // {
+    //    std::cerr << "Process " << p << " exited: " << WEXITSTATUS(status) << std::endl;
+    // }
+    Parser::count++;
+}
+
+int Parser::count = 0;
+std::vector<pid_t> Parser::pids;
+
 int main()
 {
     fill_sets();
     std::string input;
     std::vector<std::string> tokens;
+    signal(SIGINT, SIG_IGN);
+    // struct sigaction sa;
+    // memset(&sa, 0, sizeof(sa));
+    // sa.sa_handler = my_sigchld_handler;
+    // sigaction(SIGCHLD, &sa, NULL);
     while (std::getline(std::cin, input)) {
+        // std::cout << "input: " << input << std::endl;
+        Parser::handle_signals();
         // std::cout << "debug1" << std::endl;
         Parser p(input);
         // std::cout << "debug2" << std::endl;
@@ -298,7 +376,28 @@ int main()
         // std::cout << "debug3" << std::endl;
         // e.dump();
         // std::cout << "debug: handled" << std::endl;
-        e.execute();
+        if (p.background) {
+            // struct sigaction sa;
+            // memset(&sa, 0, sizeof(sa));
+            // sa.sa_handler = my_sigchld_handler;
+            // sa.sa_flags = SA_RESTART;
+
+            // sigaction(SIGCHLD, &sa, NULL);
+            pid_t pid_back = fork();
+            if (pid_back == 0) {
+                // int fd;
+                // signal (SIGINT, SIG_IGN);
+                // fd = open("/dev/null", O_RDWR);
+                // dup2(fd, 0);
+                // dup2(fd, 1);
+                // close(fd);
+                signal(SIGINT, SIG_DFL);
+                exit(e.execute());
+                }
+            std::cerr << "Spawned child process " << pid_back << std::endl;
+        } else {
+            e.execute();
+        }
     }
     return 0;
 }
