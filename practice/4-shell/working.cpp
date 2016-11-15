@@ -323,13 +323,26 @@ void Parser::handle_signals() {
     // }
     pid_t p;
     int status;
-
-    if ((p=waitpid(-1, &status, WNOHANG)) != -1)
-    {
-        if (p) {
-            std::cerr << "Process " << p << " exited: " << WEXITSTATUS(status) << std::endl;
-        }
+    // for (auto it = pids.begin(); it != pids.end(); it++) {
+    //     p = waitpid(-1, &status, WNOHANG);
+    //     if (p != 0 && p != -1) {
+    //         std::cerr << "Process " << p << " exited: " << WEXITSTATUS(status) << std::endl;
+    //         // pids.erase(it);
+    //     }
+    // }
+    p = waitpid(-1, &status, WNOHANG);
+    while (p != 0 && p != -1) {
+        std::cerr << "Process " << p << " exited: " << WEXITSTATUS(status) << std::endl;
+        p = waitpid(-1, &status, WNOHANG);
     }
+    // std::cerr << errno << ' ' << p << ' ' << EINTR << ' ' << EINVAL << ' ' << ECHILD << std::endl;
+
+    // if ((p=waitpid(-1, &status, WNOHANG)) != -1)
+    // {
+    //     if (p) {
+    //         std::cerr << "Process " << p << " exited: " << WEXITSTATUS(status) << std::endl;
+    //     }
+    // }
 }
 
 // void child_handler(int signum, siginfo_t * siginfo, void *code)  {
@@ -366,8 +379,13 @@ int main()
     // memset(&sa, 0, sizeof(sa));
     // sa.sa_handler = my_sigchld_handler;
     // sigaction(SIGCHLD, &sa, NULL);
-    while (std::getline(std::cin, input)) {
-        // std::cout << "input: " << input << std::endl;
+    std::cout << "Main pid: " << getpid() << std::endl;
+    while (!std::cin.eof()) {
+        std::getline(std::cin, input);
+        if (!input.compare("")) {
+            continue;
+        }
+        std::cout << "input: " << input << std::endl;
         Parser::handle_signals();
         // std::cout << "debug1" << std::endl;
         Parser p(input);
@@ -392,9 +410,12 @@ int main()
                 // dup2(fd, 1);
                 // close(fd);
                 signal(SIGINT, SIG_DFL);
-                exit(e.execute());
+                int ex_status = e.execute();
+                std::cout << "I've gone." << std::endl;
+                exit(WEXITSTATUS(ex_status));
                 }
             std::cerr << "Spawned child process " << pid_back << std::endl;
+            Parser::pids.push_back(pid_back);
         } else {
             e.execute();
         }
