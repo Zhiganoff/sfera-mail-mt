@@ -5,3 +5,4 @@ echo post
 
 echo exit 71 |  bash &
 sleep 0.1
+echo test exiting with 71

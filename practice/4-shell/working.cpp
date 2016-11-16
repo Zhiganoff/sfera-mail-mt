@@ -42,7 +42,6 @@ struct Expression {
     void dump();
     int execute();
     void get_conv_v(std::vector<Expression>& v);
-    // static void conveyor(Command* cmd);
 
     char** argv;         // список из имени команды и аргументов
     uint argc;           // количество аргументов
@@ -51,6 +50,7 @@ struct Expression {
 
     std::string token;
     std::vector<Expression> args;
+    static std::set<pid_t> cur_pids;
 };
 
 Expression::Expression(const std::vector<std::string>& input) {
@@ -147,7 +147,9 @@ int Expression::execute() {
                         execvp(conv[idx].argv[0], conv[idx].argv);
                     }
                 }
+                // std::cout << "debug: " << ch_pid << ' ' << last_pid << std::endl;
                 set_pids.insert(last_pid);
+                cur_pids.insert(set_pids.begin(), set_pids.end());
                 close(fd[0]);
                 close(fd[1]);
                 int ex_status, ret_status = 0;
@@ -156,9 +158,12 @@ int Expression::execute() {
                         ch_pid = waitpid(p, &ex_status, WNOHANG);
                         if (ch_pid != 0 && ch_pid != -1) {
                             set_pids.erase(ch_pid);
+                            cur_pids.erase(ch_pid);
                             if (ch_pid == last_pid) {
                                 ret_status = ex_status;
+                                // std::cout << "ret status: " << ret_status << std::endl;
                             }
+                            // std::cout << "Exited: pid = " << ch_pid << " st = " << WEXITSTATUS(ex_status) << std::endl;
                         }
                     }
                 }
@@ -170,14 +175,10 @@ int Expression::execute() {
                 //     close(fd[0]);
 
                 // }
-                if (ret_status) {
-                    return ret_status;
-                } else {
-                    return ex_status;
-                }
+                return ret_status;
             } else {
                 int ex_status = args[0].execute();
-                // std::cout << token << std::endl;
+                // std::cout << "exited" << WEXITSTATUS(ex_status) << std::endl;
                 if (!token.compare("&&"))
                 {
                     // std::cout << ex_status << std::endl;
@@ -223,7 +224,9 @@ int Expression::execute() {
                 }
             }
             int ex_status;
+            Expression::cur_pids.insert(ch_pid);
             waitpid(ch_pid, &ex_status, 0);
+            Expression::cur_pids.erase(ch_pid);
             // std::cout << ex_status << std::endl;
             return ex_status;
         }
@@ -338,12 +341,6 @@ Expression Parser::parse() {
 void Parser::handle_signals() {
     pid_t ch_pid;
     int ex_status;
-    // p = waitpid(-1, &status, WNOHANG);
-    // while (p != 0 && p != -1) {
-    //     std::cerr << "Process " << p << " exited: " << WEXITSTATUS(status) << std::endl;
-    //     p = waitpid(-1, &status, WNOHANG);
-    // }
-    // std::cout << "childpid: " << p << " errno: " << errno << std::endl;
 
     for (auto p : set_backgr) {
         ch_pid = waitpid(p, &ex_status, WNOHANG);
@@ -355,48 +352,36 @@ void Parser::handle_signals() {
     }
 }
 
-// void child_handler(int signum, siginfo_t * siginfo, void *code)  {
-//     Parser::count++;
-//     std::cout << "debug: Handled" << std::endl;
-// }
-
-void child_handler(int signum) {
-    Parser::count++;    
-}
-
-void my_sigchld_handler(int sig)
+void sigint_handler(int sig)
 {
-    // pid_t p;
-    // int status;
-
-    // while ((p=waitpid(-1, &status, WNOHANG)) != -1)
-    // {
-    //    std::cerr << "Process " << p << " exited: " << WEXITSTATUS(status) << std::endl;
-    // }
-    Parser::count++;
+    for (auto p : Parser::set_backgr) {
+        kill(p, SIGINT);
+        // std::cout << "waitpid: " << ch_pid << std::endl;
+    }
+    for (auto p : Expression::cur_pids) {
+        kill(p, SIGINT);
+    }
+    Parser::set_backgr.clear();
+    Expression::cur_pids.clear();
+    signal(SIGINT, sigint_handler);
+    // std::cout << "Hey, whi i'll die?" << std::endl;
 }
 
-int Parser::count = 0;
 std::set<pid_t> Parser::set_backgr;
+std::set<pid_t> Expression::cur_pids;
 
 int main()
 {
     fill_sets();
     std::string input;
     std::vector<std::string> tokens;
-    signal(SIGINT, SIG_IGN);
+    signal(SIGINT, sigint_handler);
     setvbuf(stdin, NULL, _IONBF, 0);
-    // struct sigaction sa;
-    // memset(&sa, 0, sizeof(sa));
-    // sa.sa_handler = my_sigchld_handler;
-    // sigaction(SIGCHLD, &sa, NULL);
     while (!std::cin.eof()) {
         if (isatty(STDIN_FILENO)) {
             std::cout << "Enter new command:" << std::endl;
         }
         std::getline(std::cin, input);
-        // std::cin.clear();
-        // std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
         if (!input.compare("")) {
             continue;
         }
@@ -410,20 +395,8 @@ int main()
         // e.dump();
         // std::cout << "debug: handled" << std::endl;
         if (p.background) {
-            // struct sigaction sa;
-            // memset(&sa, 0, sizeof(sa));
-            // sa.sa_handler = my_sigchld_handler;
-            // sa.sa_flags = SA_RESTART;
-
-            // sigaction(SIGCHLD, &sa, NULL);
             pid_t pid_back = fork();
             if (pid_back == 0) {
-                // int fd;
-                // signal (SIGINT, SIG_IGN);
-                // fd = open("/dev/null", O_RDWR);
-                // dup2(fd, 0);
-                // dup2(fd, 1);
-                // close(fd);
                 signal(SIGINT, SIG_DFL);
                 int ex_status = e.execute();
                 exit(WEXITSTATUS(ex_status));
@@ -436,5 +409,6 @@ int main()
             e.execute();
         }
     }
+    // std::cout << "Out of cycle" << std::endl;
     return 0;
 }
