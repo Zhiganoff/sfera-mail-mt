@@ -386,7 +386,6 @@ int main()
             continue;
         }
         // std::cout << "input: " << input << std::endl;
-        Parser::handle_signals();
         // std::cout << "debug1" << std::endl;
         Parser p(input);
         // std::cout << "debug2" << std::endl;
@@ -408,8 +407,8 @@ int main()
             // std::cout << "I'll execute" << std::endl;
             e.execute();
         }
+        Parser::handle_signals();
     }
-    Parser::handle_signals();
     // std::cout << "Out of cycle" << std::endl;
     return 0;
 }
