@@ -5,6 +5,8 @@
 #include <cstring>
 #include <cerrno>
 #include <stdexcept>
+#include <limits>
+#include <ios>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -116,12 +118,13 @@ int Expression::execute() {
                 // for (auto& expr : conv) {
                 //     expr.dump();
                 // }
-
+                pid_t ch_pid;
+                std::set<pid_t> set_pids;
                 int saveIn = dup(0);
                 size_t idx = 0;
                 for (; idx < conv.size() - 1; idx++) {
                     pipe2(fd, O_CLOEXEC);
-                    if (!fork()) {
+                    if (!(ch_pid = fork())) {
                         signal(SIGINT, SIG_DFL);
                         dup2(fd[1], STDOUT_FILENO);
                         close(fd[0]);
@@ -131,10 +134,12 @@ int Expression::execute() {
                             execvp(conv[idx].argv[0], conv[idx].argv);
                         }
                     }
+                    set_pids.insert(ch_pid);
                     dup2(fd[0], STDIN_FILENO);
                     close(fd[1]);
                 }
-                if (!fork()) {
+                pid_t last_pid;
+                if (!(last_pid = fork())) {
                     signal(SIGINT, SIG_DFL);
                     if (conv[idx].args.size()) {
                         exit(conv[idx].execute());
@@ -142,10 +147,21 @@ int Expression::execute() {
                         execvp(conv[idx].argv[0], conv[idx].argv);
                     }
                 }
+                set_pids.insert(last_pid);
                 close(fd[0]);
                 close(fd[1]);
-                int ex_status;
-                while (wait(&ex_status) != -1);
+                int ex_status, ret_status = 0;
+                while (set_pids.size()) {
+                    for (auto p : set_pids) {
+                        ch_pid = waitpid(p, &ex_status, WNOHANG);
+                        if (ch_pid != 0 && ch_pid != -1) {
+                            set_pids.erase(ch_pid);
+                            if (ch_pid == last_pid) {
+                                ret_status = ex_status;
+                            }
+                        }
+                    }
+                }
                 dup2(saveIn, 0);
                 close(saveIn);
                 // pipe(fd);
@@ -154,7 +170,11 @@ int Expression::execute() {
                 //     close(fd[0]);
 
                 // }
-                return ex_status;
+                if (ret_status) {
+                    return ret_status;
+                } else {
+                    return ex_status;
+                }
             } else {
                 int ex_status = args[0].execute();
                 // std::cout << token << std::endl;
@@ -177,9 +197,9 @@ int Expression::execute() {
             }
         }
         case 0: {
-            pid_t pid;
-            pid = fork();
-            if (pid == 0) {
+            pid_t ch_pid;
+            ch_pid = fork();
+            if (ch_pid == 0) {
                 signal(SIGINT, SIG_DFL);
                 /* Перенаправление ввода/вывода */
                 int fdIn, fdOut;
@@ -203,7 +223,7 @@ int Expression::execute() {
                 }
             }
             int ex_status;
-            wait(&ex_status);
+            waitpid(ch_pid, &ex_status, 0);
             // std::cout << ex_status << std::endl;
             return ex_status;
         }
@@ -237,7 +257,7 @@ public:
 
     bool background;       // True, если команда подлежит выполнению в фоновом режиме
     static int count;
-    static std::vector<pid_t> pids;
+    static std::set<pid_t> set_backgr;
 private:
     std::string parse_token();
     Expression parse_simple_expression();
@@ -316,33 +336,23 @@ Expression Parser::parse() {
 }
 
 void Parser::handle_signals() {
-    // while (count) {
-    //     int ex_status;
-    //     pid_t cp = wait(&ex_status);
-    //     std::cerr << "Process " << cp << " exited: " << WEXITSTATUS(ex_status) << std::endl;
-    // }
-    pid_t p;
-    int status;
-    // for (auto it = pids.begin(); it != pids.end(); it++) {
+    pid_t ch_pid;
+    int ex_status;
+    // p = waitpid(-1, &status, WNOHANG);
+    // while (p != 0 && p != -1) {
+    //     std::cerr << "Process " << p << " exited: " << WEXITSTATUS(status) << std::endl;
     //     p = waitpid(-1, &status, WNOHANG);
-    //     if (p != 0 && p != -1) {
-    //         std::cerr << "Process " << p << " exited: " << WEXITSTATUS(status) << std::endl;
-    //         // pids.erase(it);
-    //     }
     // }
-    p = waitpid(-1, &status, WNOHANG);
-    while (p != 0 && p != -1) {
-        std::cerr << "Process " << p << " exited: " << WEXITSTATUS(status) << std::endl;
-        p = waitpid(-1, &status, WNOHANG);
-    }
-    // std::cerr << errno << ' ' << p << ' ' << EINTR << ' ' << EINVAL << ' ' << ECHILD << std::endl;
+    // std::cout << "childpid: " << p << " errno: " << errno << std::endl;
 
-    // if ((p=waitpid(-1, &status, WNOHANG)) != -1)
-    // {
-    //     if (p) {
-    //         std::cerr << "Process " << p << " exited: " << WEXITSTATUS(status) << std::endl;
-    //     }
-    // }
+    for (auto p : set_backgr) {
+        ch_pid = waitpid(p, &ex_status, WNOHANG);
+        if (ch_pid != 0 && ch_pid != -1) {
+            set_backgr.erase(ch_pid);
+            std::cerr << "Process " << ch_pid << " exited: " << WEXITSTATUS(ex_status) << std::endl;
+        }
+        // std::cout << "waitpid: " << ch_pid << std::endl;
+    }
 }
 
 // void child_handler(int signum, siginfo_t * siginfo, void *code)  {
@@ -367,7 +377,7 @@ void my_sigchld_handler(int sig)
 }
 
 int Parser::count = 0;
-std::vector<pid_t> Parser::pids;
+std::set<pid_t> Parser::set_backgr;
 
 int main()
 {
@@ -375,17 +385,22 @@ int main()
     std::string input;
     std::vector<std::string> tokens;
     signal(SIGINT, SIG_IGN);
+    setvbuf(stdin, NULL, _IONBF, 0);
     // struct sigaction sa;
     // memset(&sa, 0, sizeof(sa));
     // sa.sa_handler = my_sigchld_handler;
     // sigaction(SIGCHLD, &sa, NULL);
-    std::cout << "Main pid: " << getpid() << std::endl;
     while (!std::cin.eof()) {
+        if (isatty(STDIN_FILENO)) {
+            std::cout << "Enter new command:" << std::endl;
+        }
         std::getline(std::cin, input);
+        // std::cin.clear();
+        // std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
         if (!input.compare("")) {
             continue;
         }
-        std::cout << "input: " << input << std::endl;
+        // std::cout << "input: " << input << std::endl;
         Parser::handle_signals();
         // std::cout << "debug1" << std::endl;
         Parser p(input);
@@ -411,12 +426,13 @@ int main()
                 // close(fd);
                 signal(SIGINT, SIG_DFL);
                 int ex_status = e.execute();
-                std::cout << "I've gone." << std::endl;
                 exit(WEXITSTATUS(ex_status));
                 }
             std::cerr << "Spawned child process " << pid_back << std::endl;
-            Parser::pids.push_back(pid_back);
+            Parser::set_backgr.insert(pid_back);
+            // Parser::pids.push_back(pid_back);
         } else {
+            // std::cout << "I'll execute" << std::endl;
             e.execute();
         }
     }
