@@ -409,6 +409,7 @@ int main()
             e.execute();
         }
     }
+    Parser::handle_signals();
     // std::cout << "Out of cycle" << std::endl;
     return 0;
 }
