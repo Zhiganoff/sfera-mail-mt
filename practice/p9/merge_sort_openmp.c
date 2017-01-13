@@ -66,7 +66,7 @@ void merge_sort(int *x, int n, int *buf) {
 }
 
 void run_test(int n_threads, int *data, int *buf) {
-    double start_time, stop_time;
+    double start_time;
     omp_set_num_threads(n_threads);
     generate_array(data, N_ELEMS);
     start_time = omp_get_wtime();
@@ -75,8 +75,7 @@ void run_test(int n_threads, int *data, int *buf) {
         #pragma omp single
         merge_sort(data, N_ELEMS, buf);
     }
-    stop_time = omp_get_wtime();
-    printf("Time: %g\n", stop_time - start_time);
+    printf("Time: %g\n", omp_get_wtime() - start_time);
 }
 
 int main() {
