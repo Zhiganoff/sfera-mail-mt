@@ -17,7 +17,7 @@ int main(int argc, char *argv[])
     long double res, sum = 0;
 
     if (argc != 2) {
-        std::cout << "Введите n - количество членов ряда Тейлора" << std::endl;
+        std::cout << "Введите n - количество членов ряда Тейлора как аргумент командной строки" << std::endl;
     }
     n = atoi(argv[1]);
 
